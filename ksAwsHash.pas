@@ -58,19 +58,17 @@ uses ksAwsConst, SysUtils,
   ;
 
 const
-  C_UNSAFE_CHARS: array of Byte = [Ord('"'), Ord(''''), Ord(':'), Ord(';'), Ord('<'), Ord('='), Ord('>'),
+  C_UNSAFE_CHARS: array[1..27] of Byte = (Ord(' '), Ord('"'), Ord(''''), Ord(':'), Ord(';'), Ord('<'), Ord('='), Ord('>'),
       Ord('@'), Ord('['), Ord(']'), Ord('^'), Ord('`'), Ord('{'), Ord('}'), Ord('|'), Ord('/'), Ord('\'), Ord('?'), Ord('#'),
-      Ord('&'), Ord('!'), Ord('$'), Ord('('), Ord(')'), Ord(','), Ord('~')];
-  //C_UNSAFE_CHARS: array[0..20] of Char = ('''', '"', ' ',':', '/', '?', '#', '[', ']', '@', '!', '$', '&', '''', '(', ')', '*', '+', ',', ';', '=');
+      Ord('&'), Ord('!'), Ord('$'), Ord('('), Ord(')'), Ord(','), Ord('~'));
 
 {$IFDEF USE_INDY}
 
 function ParamEncode(AParam: string): string;
 var
   AChar: Cardinal;
-  AHex: string;
 begin
-  Result := AParam;
+  Result := TIdURI.ParamsEncode(AParam);
   for AChar in C_UNSAFE_CHARS do
   begin
     Result := StringReplace(Result, Char(AChar), '%'+Copy(ToHex([AChar]), 1, 2), [rfReplaceAll]);

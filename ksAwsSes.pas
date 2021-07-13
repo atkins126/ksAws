@@ -34,11 +34,13 @@ type
   ['{A58BC820-722F-4E68-8DE6-029A007FA29F}']
     function GetBcc: TStrings;
     function GetBody: string;
+    function GetHtml: string;
     function GetCc: TStrings;
     function GetRecipients: TStrings;
     function GetSender: string;
     function GetSubject: string;
     procedure SetBody(const Value: string);
+    procedure SetHtml(const Value: string);
     procedure SetSender(const Value: string);
     procedure SetSubject(const Value: string);
     property Sender: string read GetSender write SetSender;
@@ -47,23 +49,28 @@ type
     property Bcc: TStrings read GetBcc;
     property Subject: string read GetSubject write SetSubject;
     property Body: string read GetBody write SetBody;
+    property Html: string read GetHtml write SetHtml;
   end;
 
   IksAwsSES = interface
   ['{95F8984E-2A05-4071-B906-67CDBCBEA51A}']
+    function GetVerificationStatus(AEmail: string): string;
+    procedure GetVerifiedEmails(ACheckEmails, AResult: TStrings);
+
     procedure GetSenders(ASenders: TStrings; const ALimit: integer = 0);
+    //procedure GetVerifiedEmails(AVerifiedEmails: TStrings);
     procedure DeleteIdentity(AIdentity: string);
     procedure SendEmail(AMessage: IksAwsSesMessage);
     procedure VerifyEmailIdentity(AEmailAddress: string);
   end;
 
   function CreateSes(AAccessKey, ASecretKey: string; ARegion: TksAwsRegion): IksAwsSES;
-  function CreateSesMessage(ARecipient, ASender, ASubject, ABody: string): IksAwsSesMessage;
+  function CreateSesMessage(ARecipient, ASender, ASubject, ABody: string; const AIsHtml: Boolean = True): IksAwsSesMessage;
 
 
 implementation
 
-uses ksAwsConst, Xml.xmldom, Xml.XMLIntf, Xml.XMLDoc, Math, ksAwsHash;
+uses ksAwsConst, Xml.xmldom, Xml.XMLIntf, Xml.XMLDoc, Math, ksAwsHash, ClipBrd;
 
 type
   TksAwsSesMessage = class(TInterfacedObject, IksAwsSesMessage)
@@ -71,6 +78,7 @@ type
     FSender: string;
     FSubject: string;
     FBody: string;
+    FHtml: string;
     FRecipients: TStrings;
     FCc: TStrings;
     FBcc: TStrings;
@@ -83,6 +91,8 @@ type
     procedure SetBody(const Value: string);
     procedure SetSender(const Value: string);
     procedure SetSubject(const Value: string);
+    function GetHtml: string;
+    procedure SetHtml(const Value: string);
   protected
     property Sender: string read GetSender write SetSender;
     property Recipients: TStrings read GetRecipients;
@@ -90,6 +100,7 @@ type
     property Bcc: TStrings read GetBcc;
     property Subject: string read GetSubject write SetSubject;
     property Body: string read GetBody write SetBody;
+    property Html: string read GetHtml write SetHtml;
   public
     constructor Create; virtual;
     destructor Destroy; override;
@@ -101,10 +112,15 @@ type
     { Private declarations }
   protected
     function GetServiceName: string; override;
+    function GetVerificationStatus(AEmail: string): string; overload;
+    procedure GetVerifiedEmails(ACheckEmails, AResult: TStrings);
+
     procedure DeleteIdentity(AIdentity: string);
+    //procedure GetVerifiedEmails(AVerifiedEmails: TStrings);
     procedure GetSenders(ASenders: TStrings; const AMaxItems: integer = 0);
     procedure SendEmail(AMessage: IksAwsSesMessage);
     procedure VerifyEmailIdentity(AEmailAddress: string);
+
   public
     { Public declarations }
   end;
@@ -115,13 +131,16 @@ begin
   Result := TksAwsSES.Create(AAccessKey, ASecretKey, ARegion);
 end;
 
-function CreateSesMessage(ARecipient, ASender, ASubject, ABody: string): IksAwsSesMessage;
+function CreateSesMessage(ARecipient, ASender, ASubject, ABody: string; const AIsHtml: Boolean = True): IksAwsSesMessage;
 begin
   Result := TksAwsSesMessage.Create;
   Result.Recipients.Add(ARecipient);
   Result.Sender := ASender;
   Result.Subject := ASubject;
-  Result.Body := ABody;
+  case AIsHtml of
+    True: Result.Html := ABody;
+    False: Result.Body := ABody;
+  end;
 end;
 
 { TksAwsSesMessage }
@@ -156,6 +175,11 @@ begin
   Result := FCc;
 end;
 
+function TksAwsSesMessage.GetHtml: string;
+begin
+  Result := FHtml;
+end;
+
 function TksAwsSesMessage.GetRecipients: TStrings;
 begin
   Result := FRecipients;
@@ -175,6 +199,11 @@ end;
 procedure TksAwsSesMessage.SetBody(const Value: string);
 begin
   FBody := Value;
+end;
+
+procedure TksAwsSesMessage.SetHtml(const Value: string);
+begin
+  FHtml := Value;
 end;
 
 procedure TksAwsSesMessage.SetSender(const Value: string);
@@ -262,6 +291,116 @@ begin
   Result := C_SERVICE_SES;
 end;
 
+function TksAwsSES.GetVerificationStatus(AEmail: string): string;
+var
+  AResponse: string;
+  AParams: TStrings;
+  ICount: integer;
+  AStrings: TStrings;
+  AStr: string;
+begin
+  Result := '';
+  AStrings := TStringList.Create;
+  AParams := TStringList.Create;
+  try
+    AParams.Values['Identities.member.'+IntToStr(1)] := AEmail;
+    AResponse := ExecuteHttp('POST', 'GetIdentityVerificationAttributes', Host, '', '', nil, AParams).ContentAsString;
+    AStrings.Text := AResponse;
+    for ICount := 0 to AStrings.Count-1 do
+    begin
+      AStr := Trim(AStrings[ICount]).ToLower;
+      if Pos('<verificationstatus>', AStr) > 0 then
+      begin
+        AStr := StringReplace(AStr, '<verificationstatus>', '', []);
+        AStr := StringReplace(AStr, '</verificationstatus>', '', []);
+        Result := AStr;
+        Exit;
+      end;
+    end;
+  finally
+    AParams.Free;
+    AStrings.Free;
+  end;
+end;
+
+procedure TksAwsSES.GetVerifiedEmails(ACheckEmails, AResult: TStrings);
+var
+  AResponse: string;
+  AParams: TStrings;
+  ICount: integer;
+  AStrings: TStrings;
+  AStr: string;
+  AXml: IXmlDocument;
+  ANode: IXMLNode;
+  AItem: IXMLNode;
+  AEmail: string;
+  AStatus: IXmlNode;
+begin
+  AResult.Clear;
+  AStrings := TStringList.Create;
+  AParams := TStringList.Create;
+  try
+    for ICount := 1 to ACheckEmails.Count do
+      AParams.Values['Identities.member.'+IntToStr(ICount)] := ACheckEmails[ICount-1];
+
+    AResponse := ExecuteHttp('POST', 'GetIdentityVerificationAttributes', Host, '', '', nil, AParams).ContentAsString;
+    AXml := TXMLDocument.Create(nil);
+    AXml.LoadFromXML(AResponse);
+    ANode := AXml.ChildNodes.FindNode('GetIdentityVerificationAttributesResponse');
+    if ANode = nil then
+      Exit;
+    ANode := ANode.ChildNodes.FindNode('GetIdentityVerificationAttributesResult');
+    ANode := ANode.ChildNodes.FindNode('VerificationAttributes');
+
+    for ICount := 0 to ANode.ChildNodes.Count-1 do
+    begin
+      AItem := ANode.ChildNodes[ICount];
+      AEmail := AItem.ChildNodes.FindNode('key').NodeValue;
+      AStatus := AItem.ChildNodes.FindNode('value');
+      if AStatus <> nil then
+      begin
+        AStatus := AStatus.ChildNodes.FindNode('VerificationStatus');
+        AStr := AStatus.NodeValue;
+        AStr := AStr.ToLower;
+        if AStr = 'success' then
+        begin
+          AResult.Add(AEmail)
+        end;
+      end;
+    end;
+
+
+    {AStrings.Text := AResponse;
+    Clipboard.AsText :=  AResponse;
+    for ICount := 0 to AStrings.Count-1 do
+    begin
+      AStr := Trim(AStrings[ICount]).ToLower;
+      if Pos('<verificationstatus>', AStr) > 0 then
+      begin
+        AStr := StringReplace(AStr, '<verificationstatus>', '', []);
+        AStr := StringReplace(AStr, '</verificationstatus>', '', []);
+        Result := AStr;
+        Exit;
+      end;
+    end;}
+  finally
+    AParams.Free;
+   // AStrings.Free;
+  end;
+end;
+                                                                {
+procedure TksAwsSES.GetVerifiedEmails(AVerifiedEmails: TStrings);
+var
+  AEmails: TStrings;
+begin
+  AEmails := TStringList.Create;
+  try
+    GetSenders(AEmails);
+  finally
+    AEmails.Free;
+  end;
+end;    }
+
 procedure TksAwsSES.SendEmail(AMessage: IksAwsSesMessage);
 var
   AResponse: string;
@@ -275,6 +414,7 @@ begin
     BuildDestinationParams('bcc', AMessage.Bcc, AParams);
     AParams.Values['Message.Subject.Data'] := AMessage.Subject;
     AParams.Values['Message.Body.Text.Data'] := AMessage.Body;
+    AParams.Values['Message.Body.Html.Data'] := AMessage.Html;
     AResponse := ExecuteHttp('POST', 'SendEmail', Host, '', '', nil, AParams).ContentAsString;
   finally
     AParams.Free;
